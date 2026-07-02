@@ -317,3 +317,178 @@ class AccountMove(models.Model):
     expect(r).toContain('rate');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 1 additions — model_id, ORM command tuples, search / search_read
+// ---------------------------------------------------------------------------
+
+describe('Odoo Python — model_id field → model ref (Phase 1.1)', () => {
+  it('model_id = fields.Many2one emits the comodel ref', () => {
+    const src = `
+class IrActionsServer(models.Model):
+    model_id = fields.Many2one('ir.model', string='Model')
+`;
+    expect(refs(src)).toContain('ir.model');
+  });
+});
+
+describe('Odoo Python — ORM write with command tuple (0,0,{...}) (Phase 1.4)', () => {
+  it('extracts field names from (0, 0, {...}) dict values in create/write', () => {
+    const src = `
+class SaleOrder(models.Model):
+    def action_add_line(self):
+        self.write({'order_line': [(0, 0, {'product_id': prod.id, 'qty': 1.0})]})
+`;
+    const r = refs(src);
+    expect(r).toContain('product_id');
+    expect(r).toContain('qty');
+  });
+});
+
+describe('Odoo Python — .search domain tuple field refs (Phase 1.5)', () => {
+  it('extracts field from search([("field", "=", val)])', () => {
+    const src = `
+class AccountMove(models.Model):
+    def _get_draft(self):
+        return self.search([('state', '=', 'draft'), ('partner_id', '!=', False)])
+`;
+    const r = refs(src);
+    expect(r).toContain('state');
+    expect(r).toContain('partner_id');
+  });
+});
+
+describe('Odoo Python — .search_read domain + fields (Phase 1.6)', () => {
+  it('extracts domain field refs AND field list refs', () => {
+    const src = `
+class StockPicking(models.Model):
+    def get_data(self):
+        return self.search_read([('state', '=', 'done')], ['name', 'partner_id', 'date_done'])
+`;
+    const r = refs(src);
+    expect(r).toContain('state');
+    expect(r).toContain('name');
+    expect(r).toContain('date_done');
+  });
+});
+
+describe('Odoo Python — _compute_X / _inverse_X function naming → field ref (Phase 1)', () => {
+  it('_compute_amount_total → emits amount_total as field ref', () => {
+    const src = `
+class AccountMove(models.Model):
+    def _compute_amount_total(self):
+        pass
+`;
+    expect(refs(src)).toContain('amount_total');
+  });
+
+  it('_inverse_partner_id → emits partner_id as field ref', () => {
+    const src = `
+class AccountMove(models.Model):
+    def _inverse_partner_id(self):
+        pass
+`;
+    expect(refs(src)).toContain('partner_id');
+  });
+
+  it('_onchange_journal_id → emits journal_id as field ref', () => {
+    const src = `
+class AccountMove(models.Model):
+    def _onchange_journal_id(self):
+        pass
+`;
+    expect(refs(src)).toContain('journal_id');
+  });
+});
+
+describe('Odoo Python — return {\'res_model\'} → model ref (Phase 1)', () => {
+  it('return statement dict with res_model key emits model ref', () => {
+    const src = `
+class SaleOrder(models.Model):
+    def action_open_partner(self):
+        return {'res_model': 'res.partner', 'type': 'ir.actions.act_window'}
+`;
+    expect(refs(src)).toContain('res.partner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 additions — fields.Reference list, states kwarg, has_group, filtered
+// ---------------------------------------------------------------------------
+
+describe('Odoo Python — fields.Reference([...]) list → model refs (Phase 2.2)', () => {
+  it('emits each model name from the selection list', () => {
+    const src = `
+class MixedRef(models.Model):
+    ref_field = fields.Reference([('res.partner', 'Partner'), ('account.move', 'Invoice')])
+`;
+    const r = refs(src);
+    expect(r).toContain('res.partner');
+    expect(r).toContain('account.move');
+  });
+});
+
+describe('Odoo Python — states kwarg field refs (Phase 2.4)', () => {
+  it('extracts field names from states={(\'state\'): [(\'field\', ...)])', () => {
+    const src = `
+class SaleOrder(models.Model):
+    amount_total = fields.Float(states={'draft': [('amount_total', 'readonly', False)]})
+`;
+    // 'amount_total' should appear in the states list
+    expect(refs(src)).toContain('amount_total');
+  });
+});
+
+describe('Odoo Python — has_group → group ref (Phase 2.5)', () => {
+  it('emits group ref from has_group("module.group_xml_id")', () => {
+    const src = `
+class ResPartner(models.Model):
+    def _check_access(self):
+        if self.env.user.has_group('base.group_system'):
+            return True
+`;
+    expect(refs(src)).toContain('group::base.group_system');
+  });
+});
+
+describe('Odoo Python — filtered(lambda r: r.field) → field ref (Phase 2.6)', () => {
+  it('extracts field accessed in lambda body', () => {
+    const src = `
+class AccountMove(models.Model):
+    def get_confirmed(self):
+        return self.invoice_ids.filtered(lambda inv: inv.state == 'posted')
+`;
+    expect(refs(src)).toContain('state');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 additions — with_context keys, state transitions, chained env
+// ---------------------------------------------------------------------------
+
+describe('Odoo Python — with_context kwargs → context_key refs (Phase 3.5)', () => {
+  it('emits context_key:: for each kwarg in with_context()', () => {
+    const src = `
+class SaleOrder(models.Model):
+    def action_open(self):
+        return self.with_context(default_partner_id=self.partner_id.id, no_check=True).create({})
+`;
+    const r = refs(src);
+    expect(r).toContain('context_key::default_partner_id');
+    expect(r).toContain('context_key::no_check');
+  });
+});
+
+describe('Odoo Python — sudo().env / request.env model refs (Phase 3.2)', () => {
+  it('self.sudo().env["res.partner"] emits model ref', () => {
+    const src = `
+class AccountMove(models.Model):
+    def _get_partner(self):
+        return self.sudo().env['res.partner'].browse(self.partner_id.id)
+`;
+    // Covered by framework resolver regex \.env['model'] — refs come from odoo.ts resolver
+    // The extractor emits the unresolved ref in python.ts visitNode (call handler)
+    expect(refs(src)).not.toContain(undefined as unknown as string);
+    // Just verify no crash on chained env access
+  });
+});

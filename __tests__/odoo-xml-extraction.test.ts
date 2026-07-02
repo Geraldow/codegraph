@@ -1,7 +1,9 @@
 /**
  * Unit tests for src/extraction/odoo-extractor.ts
  * Covers: menuitem attrs, label for, field text content, filter nodes,
- * field groups attr, embedded Python, act_window, function tag, xpath refs.
+ * field groups attr, embedded Python, act_window, function tag, xpath refs,
+ * ir.sequence/config_param dual nodes, domain field refs, context defaults,
+ * eval ref() patterns, t-field, t-on-* arch patterns.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -271,5 +273,190 @@ describe('OdooExtractor — xpath attr refs (spec 2.10)', () => {
 </odoo>`;
     // @id patterns must not emit refs (spec 2.10)
     expect(refNames(src)).not.toContain('group_partner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec Phase 1 — ir.sequence / ir.config_parameter dual variable nodes
+// ---------------------------------------------------------------------------
+
+describe('OdooExtractor — ir.sequence dual variable node (Phase 1)', () => {
+  it('creates a variable node with qualifiedName ir.sequence::{code}', () => {
+    const src = `<odoo>
+  <record id="seq_detraction" model="ir.sequence">
+    <field name="name">Detraction Sequence</field>
+    <field name="code">account.detraction.customer</field>
+    <field name="prefix">DET</field>
+  </record>
+</odoo>`;
+    const qnames = nodeQNames(src);
+    expect(qnames).toContain('ir.sequence::account.detraction.customer');
+  });
+
+  it('the sequence record node itself still exists', () => {
+    const src = `<odoo>
+  <record id="seq_test" model="ir.sequence">
+    <field name="code">sale.order</field>
+  </record>
+</odoo>`;
+    const nodes = extract(src).nodes;
+    const seqNode = nodes.find(n => n.qualifiedName === 'ir.sequence::sale.order');
+    expect(seqNode).toBeDefined();
+    expect(seqNode?.kind).toBe('variable');
+    expect(seqNode?.signature).toBe('sequence code');
+  });
+});
+
+describe('OdooExtractor — ir.config_parameter dual variable node (Phase 1)', () => {
+  it('creates a variable node with qualifiedName config_param::{key}', () => {
+    const src = `<odoo>
+  <record id="param_web_base" model="ir.config_parameter">
+    <field name="key">web.base.url</field>
+    <field name="value">http://localhost:8069</field>
+  </record>
+</odoo>`;
+    const qnames = nodeQNames(src);
+    expect(qnames).toContain('config_param::web.base.url');
+  });
+
+  it('config_param node has correct kind and signature', () => {
+    const src = `<odoo>
+  <record id="param_test" model="ir.config_parameter">
+    <field name="key">mail.catchall.domain</field>
+  </record>
+</odoo>`;
+    const nodes = extract(src).nodes;
+    const paramNode = nodes.find(n => n.qualifiedName === 'config_param::mail.catchall.domain');
+    expect(paramNode?.kind).toBe('variable');
+    expect(paramNode?.signature).toBe('config_param key');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec Phase 4 — domain field refs from domain_force and domain fields
+// ---------------------------------------------------------------------------
+
+describe('OdooExtractor — domain_force field refs (Phase 4.1)', () => {
+  it('extracts field names from ir.rule domain_force tuples', () => {
+    const src = `<odoo>
+  <record id="rule_partner" model="ir.rule">
+    <field name="name">Partner rule</field>
+    <field name="model_id" ref="base.model_res_partner"/>
+    <field name="domain_force">[('partner_id', '=', user.id), ('state', 'in', ['draft'])]</field>
+  </record>
+</odoo>`;
+    const r = refNames(src);
+    expect(r).toContain('partner_id');
+    expect(r).toContain('state');
+  });
+
+  it('skips logical operators | & !', () => {
+    const src = `<odoo>
+  <record id="rule_multi" model="ir.rule">
+    <field name="domain_force">['|', ('partner_id', '=', uid), ('user_id', '=', uid)]</field>
+  </record>
+</odoo>`;
+    const r = refNames(src);
+    expect(r).toContain('partner_id');
+    expect(r).toContain('user_id');
+    expect(r).not.toContain('|');
+  });
+
+  it('splits dotted field paths like partner_id.name', () => {
+    const src = `<odoo>
+  <record id="rule_dotted" model="ir.rule">
+    <field name="domain_force">[('partner_id.name', 'like', 'test')]</field>
+  </record>
+</odoo>`;
+    const r = refNames(src);
+    expect(r).toContain('partner_id');
+    expect(r).toContain('name');
+  });
+});
+
+describe('OdooExtractor — domain field refs in act_window (Phase 4.2)', () => {
+  it('extracts field refs from <field name="domain"> in act_window record', () => {
+    const src = `<odoo>
+  <record id="action_orders" model="ir.actions.act_window">
+    <field name="name">Sale Orders</field>
+    <field name="res_model">sale.order</field>
+    <field name="domain">[('state', '!=', 'cancel')]</field>
+  </record>
+</odoo>`;
+    expect(refNames(src)).toContain('state');
+  });
+});
+
+describe('OdooExtractor — context default_ field refs (Phase 4.3)', () => {
+  it('extracts default_X key as field ref', () => {
+    const src = `<odoo>
+  <record id="action_partner" model="ir.actions.act_window">
+    <field name="context">{'default_partner_id': active_id, 'default_move_type': 'in_invoice'}</field>
+  </record>
+</odoo>`;
+    const r = refNames(src);
+    expect(r).toContain('partner_id');
+    expect(r).toContain('move_type');
+  });
+
+  it('emits context_key:: refs for all dict keys', () => {
+    const src = `<odoo>
+  <record id="action_ctx" model="ir.actions.act_window">
+    <field name="context">{'active_test': False}</field>
+  </record>
+</odoo>`;
+    expect(refNames(src)).toContain('context_key::active_test');
+  });
+});
+
+describe('OdooExtractor — eval ref() xml_id refs (Phase 4.8)', () => {
+  it('extracts xml_id from eval="[(4, ref(\'X\'))]"', () => {
+    const src = `<odoo>
+  <record id="group_manager" model="res.groups">
+    <field name="implied_ids" eval="[(4, ref('base.group_user'))]"/>
+    <field name="users" eval="[(4, ref('base.user_root'))]"/>
+  </record>
+</odoo>`;
+    const r = refNames(src);
+    expect(r).toContain('base.group_user');
+    expect(r).toContain('base.user_root');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec Phase 4 — arch content: t-field and t-on-* patterns
+// ---------------------------------------------------------------------------
+
+describe('OdooExtractor — t-field segment refs in arch (Phase 4.4)', () => {
+  it('emits each path segment from t-field="object.partner_id"', () => {
+    const src = `<odoo>
+  <record id="report_view" model="ir.ui.view">
+    <field name="arch" type="xml">
+      <t t-foreach="docs" t-as="o">
+        <span t-field="o.partner_id"/>
+        <span t-field="o.amount_total"/>
+      </t>
+    </field>
+  </record>
+</odoo>`;
+    const r = refNames(src);
+    expect(r).toContain('partner_id');
+    expect(r).toContain('amount_total');
+  });
+});
+
+describe('OdooExtractor — t-on-* method refs in arch (Phase 4.5)', () => {
+  it('emits method ref from t-on-click attribute', () => {
+    const src = `<odoo>
+  <record id="owl_view" model="ir.ui.view">
+    <field name="arch" type="xml">
+      <button t-on-click="onConfirm" class="btn-primary"/>
+      <input t-on-change="onAmountChange"/>
+    </field>
+  </record>
+</odoo>`;
+    const r = refNames(src);
+    expect(r).toContain('onConfirm');
+    expect(r).toContain('onAmountChange');
   });
 });
