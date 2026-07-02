@@ -181,6 +181,56 @@ export function owlVisitNode(node: SyntaxNode, ctx: ExtractorContext): boolean {
       }
     }
 
+    // 5.1: orm.call('res.partner', 'search', ...) → model + method refs
+    if (/\borm\.call$/.test(funcText)) {
+      const [modelArg, methodArg] = argsNode.namedChildren;
+      if (modelArg?.type === 'string') {
+        const model = getNodeText(modelArg, ctx.source).replace(/['"]/g, '');
+        if (model) ctx.addUnresolvedReference({ fromNodeId, referenceName: model, referenceKind: 'references', line, column: node.startPosition.column, filePath: ctx.filePath, language: 'javascript' });
+      }
+      if (methodArg?.type === 'string') {
+        const method = getNodeText(methodArg, ctx.source).replace(/['"]/g, '');
+        if (method) ctx.addUnresolvedReference({ fromNodeId, referenceName: method, referenceKind: 'references', line, column: node.startPosition.column, filePath: ctx.filePath, language: 'javascript' });
+      }
+    }
+
+    // 5.2: orm.searchRead('res.partner', ['field1', 'field2']) → model + field refs
+    if (/\borm\.searchRead$/.test(funcText)) {
+      const [modelArg, fieldsArg] = argsNode.namedChildren;
+      if (modelArg?.type === 'string') {
+        const model = getNodeText(modelArg, ctx.source).replace(/['"]/g, '');
+        if (model) ctx.addUnresolvedReference({ fromNodeId, referenceName: model, referenceKind: 'references', line, column: node.startPosition.column, filePath: ctx.filePath, language: 'javascript' });
+      }
+      if (fieldsArg?.type === 'array') {
+        for (const el of fieldsArg.namedChildren) {
+          if (el.type === 'string') {
+            const field = getNodeText(el, ctx.source).replace(/['"]/g, '');
+            if (field) ctx.addUnresolvedReference({ fromNodeId, referenceName: field, referenceKind: 'references', line, column: node.startPosition.column, filePath: ctx.filePath, language: 'javascript' });
+          }
+        }
+      }
+    }
+
+    // 5.3: doAction({res_model: 'X'}) / 5.4: loadViews({model: 'X'}) → model ref
+    if (/\b(?:doAction|do_action|loadViews)$/.test(funcText)) {
+      const firstArg = argsNode.namedChildren[0];
+      if (firstArg?.type === 'object') {
+        for (const prop of firstArg.namedChildren) {
+          if (prop.type === 'pair') {
+            const keyNode = prop.childForFieldName?.('key') ?? prop.namedChildren[0];
+            const valNode = prop.childForFieldName?.('value') ?? prop.namedChildren[1];
+            if (keyNode && valNode) {
+              const keyText = getNodeText(keyNode, ctx.source).replace(/['"]/g, '');
+              if ((keyText === 'res_model' || keyText === 'model') && valNode.type === 'string') {
+                const modelName = getNodeText(valNode, ctx.source).replace(/['"]/g, '');
+                if (modelName) ctx.addUnresolvedReference({ fromNodeId, referenceName: modelName, referenceKind: 'references', line, column: node.startPosition.column, filePath: ctx.filePath, language: 'javascript' });
+              }
+            }
+          }
+        }
+      }
+    }
+
     return false;
   }
 

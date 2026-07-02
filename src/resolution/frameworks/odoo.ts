@@ -21,9 +21,20 @@ export const odooResolver: FrameworkResolver = {
   },
 
   resolve(ref, context) {
-    // Resolve dotted model names like 'res.partner' → class node with _name = 'res.partner'
     if (!this.claimsReference!(ref.referenceName)) return null;
-    const modelName = ref.referenceName;
+    const name = ref.referenceName;
+
+    // 7.3: config_param::key or ir.sequence::code → find variable node by qualifiedName
+    if (/^(?:config_param|ir\.sequence)::/.test(name)) {
+      const shortName = name.split('::')[1] ?? '';
+      const candidates = context.getNodesByName(shortName);
+      const match = candidates.find((n) => n.qualifiedName === name);
+      if (match) return { original: ref, targetNodeId: match.id, confidence: 0.9, resolvedBy: 'framework' };
+      return null;
+    }
+
+    // Resolve dotted model names like 'res.partner' → class node with _name = 'res.partner'
+    const modelName = name;
     const candidates = context.getNodesByName(modelName);
     if (candidates.length > 0) {
       const cls = candidates.find((n) => n.kind === 'class');
@@ -44,7 +55,10 @@ export const odooResolver: FrameworkResolver = {
 
   claimsReference(name) {
     // Claim dotted Odoo model names: 'res.partner', 'account.move.line', etc.
-    return /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(name);
+    if (/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(name)) return true;
+    // Claim config_param and ir.sequence cross-file refs
+    if (/^(?:config_param|ir\.sequence)::/.test(name)) return true;
+    return false;
   },
 
   extract(filePath, content) {
@@ -132,7 +146,7 @@ function extractPythonPatterns(
     references.push({ fromNodeId: `file:${filePath}`, referenceName: `ir.sequence::${code}`, referenceKind: 'references', line, column: 0, filePath, language: 'python' });
   }
 
-  // @route('/path', ...) or @http.route('/path', ...)
+  // @route('/path', ...) or @http.route('/path', ...) — single string
   const routeDecorator = /@(?:http\.)?route\s*\(\s*['"]([^'"]+)['"]/g;
   while ((m = routeDecorator.exec(safe)) !== null) {
     const routePath = m[1]!;
@@ -151,6 +165,36 @@ function extractPythonPatterns(
       updatedAt: now,
     };
     nodes.push(routeNode);
+  }
+  // 6.2: @route(['/path1', '/path2'], ...) → one route node per path in the list
+  const routeList = /@(?:http\.)?route\s*\(\s*\[([^\]]+)\]/g;
+  while ((m = routeList.exec(safe)) !== null) {
+    const listContent = m[1]!;
+    const line = safe.slice(0, m.index).split('\n').length;
+    const pathItems = listContent.match(/['"]([^'"]+)['"]/g) ?? [];
+    for (const item of pathItems) {
+      const routePath = item.slice(1, -1);
+      nodes.push({
+        id: `route:${filePath}:${line}:${routePath}`,
+        kind: 'route',
+        name: routePath,
+        qualifiedName: `${filePath}::route:${routePath}`,
+        filePath,
+        startLine: line,
+        endLine: line,
+        startColumn: 0,
+        endColumn: 0,
+        language: 'python',
+        updatedAt: now,
+      });
+    }
+  }
+  // 6.1: request.render('module.template', vals) → qweb ref
+  const requestRender = /request\.render\s*\(\s*['"]([^'"]+)['"]/g;
+  while ((m = requestRender.exec(safe)) !== null) {
+    const templateId = m[1]!;
+    const line = safe.slice(0, m.index).split('\n').length;
+    references.push({ fromNodeId: `file:${filePath}`, referenceName: `qweb::${templateId}`, referenceKind: 'references', line, column: 0, filePath, language: 'python' });
   }
 }
 

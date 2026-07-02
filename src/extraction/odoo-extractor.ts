@@ -259,6 +259,21 @@ export class OdooExtractor {
             this.unresolvedReferences.push({ fromNodeId: nodeId, referenceName: btnInXpath[1]!, referenceKind: 'references', line: this.getLineNumber(archOffset + xp.index), column: 0 });
           }
         }
+        // t-field="record.field.sub" → field path segment refs
+        const tFieldAttr = /\bt-field\s*=\s*"([^"]+)"/g;
+        let tfa: RegExpExecArray | null;
+        while ((tfa = tFieldAttr.exec(archContent)) !== null) {
+          for (const seg of tfa[1]!.split('.')) {
+            if (seg) this.unresolvedReferences.push({ fromNodeId: nodeId, referenceName: seg, referenceKind: 'references', line: this.getLineNumber(archOffset + tfa.index), column: 0 });
+          }
+        }
+        // t-on-click/t-on-change/t-on-*="methodName" → method ref
+        const tOnAttr = /\bt-on-\w+\s*=\s*"([^"(]+)(?:\([^)]*\))?"/g;
+        let toa: RegExpExecArray | null;
+        while ((toa = tOnAttr.exec(archContent)) !== null) {
+          const method = toa[1]!.trim();
+          if (method) this.unresolvedReferences.push({ fromNodeId: nodeId, referenceName: method, referenceKind: 'references', line: this.getLineNumber(archOffset + toa.index), column: 0 });
+        }
       }
       // T2-B: <field name="code"> embedded Python in ir.actions.server / ir.cron
       if (['ir.actions.server', 'ir.cron'].includes(model)) {
@@ -304,6 +319,45 @@ export class OdooExtractor {
             this.edges.push({ source: nodeId, target: keyNodeId, kind: 'contains' });
           }
         }
+      }
+      // domain_force (ir.rule) + domain (act_window/filters) → field refs from domain tuple first elements
+      for (const domainFieldName of ['domain_force', 'domain']) {
+        const domRx = new RegExp(`<field\\s+name\\s*=\\s*"${domainFieldName}"\\s*>([^<]+)<\\/field>`, 'g');
+        let dr: RegExpExecArray | null;
+        while ((dr = domRx.exec(body)) !== null) {
+          const tupleFirst = /\(['"]([^'"]+)['"]\s*,/g;
+          let tf: RegExpExecArray | null;
+          while ((tf = tupleFirst.exec(dr[1]!)) !== null) {
+            const fname = tf[1]!;
+            if (/^[|&!]$/.test(fname)) continue;
+            for (const seg of fname.split('.')) {
+              if (seg) this.unresolvedReferences.push({ fromNodeId: nodeId, referenceName: seg, referenceKind: 'references', line: startLine, column: 0 });
+            }
+          }
+        }
+      }
+      // context field → default_X keys become field refs; all keys become context_key refs
+      const ctxRx = /<field\s+name\s*=\s*"context"\s*>([^<]+)<\/field>/g;
+      let cx: RegExpExecArray | null;
+      while ((cx = ctxRx.exec(body)) !== null) {
+        const ctxText = cx[1]!;
+        const defaultKey = /['"]default_([^'"]+)['"]/g;
+        let dk: RegExpExecArray | null;
+        while ((dk = defaultKey.exec(ctxText)) !== null) {
+          this.unresolvedReferences.push({ fromNodeId: nodeId, referenceName: dk[1]!, referenceKind: 'references', line: startLine, column: 0 });
+        }
+        const anyKey = /['"]([^'"]+)['"]\s*:/g;
+        let ak: RegExpExecArray | null;
+        while ((ak = anyKey.exec(ctxText)) !== null) {
+          const k = ak[1]!;
+          if (k) this.unresolvedReferences.push({ fromNodeId: nodeId, referenceName: `context_key::${k}`, referenceKind: 'references', line: startLine, column: 0 });
+        }
+      }
+      // eval="[(4, ref('module.xml_id'))]" → xml_id refs
+      const evalRefRx = /eval\s*=\s*"[^"]*ref\('([^']+)'\)[^"]*"/g;
+      let ev: RegExpExecArray | null;
+      while ((ev = evalRefRx.exec(body)) !== null) {
+        this.unresolvedReferences.push({ fromNodeId: nodeId, referenceName: ev[1]!, referenceKind: 'references', line: startLine, column: 0 });
       }
     }
   }
