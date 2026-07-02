@@ -604,6 +604,21 @@ export const tools: ToolDefinition[] = [
       required: ['from', 'to'],
     },
   },
+  {
+    name: 'codegraph_module_overview',
+    description: 'Structured overview of an Odoo module: models, views, routes, groups, and security rules — in ONE call. Use before exploring an Odoo module to avoid multiple codegraph_files + codegraph_search calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        module: {
+          type: 'string',
+          description: 'Module directory name or path (e.g., "account_move", "addons/sale"). Matches any file whose path contains this segment.',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['module'],
+    },
+  },
 ];
 
 /**
@@ -1083,6 +1098,8 @@ export class ToolHandler {
           result = await this.handleFiles(args); break;
         case 'codegraph_trace':
           result = await this.handleTrace(args); break;
+        case 'codegraph_module_overview':
+          result = await this.handleModuleOverview(args); break;
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -3202,6 +3219,105 @@ export class ToolHandler {
 
   private formatTaskContext(context: TaskContext): string {
     return context.summary || 'No context found';
+  }
+
+  /**
+   * Handle codegraph_module_overview — structured Odoo module summary
+   */
+  private async handleModuleOverview(args: Record<string, unknown>): Promise<ToolResult> {
+    const module = this.validateString(args.module, 'module');
+    if (typeof module !== 'string') return module;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const allFiles = cg.getFiles();
+
+    // Match files whose path contains the module segment
+    const seg = module.replace(/\\/g, '/').replace(/\/+$/, '');
+    const moduleFiles = allFiles.filter(f => {
+      const p = f.path.replace(/\\/g, '/');
+      return p === seg || p.startsWith(seg + '/') || p.includes('/' + seg + '/') || p.includes('/' + seg + '\\');
+    });
+
+    if (moduleFiles.length === 0) {
+      return this.textResult(`No files found for module "${module}". Check the module name or path.`);
+    }
+
+    // Collect all nodes from module files
+    const allNodes = moduleFiles.flatMap(f => cg.getNodesInFile(f.path));
+
+    // Group by kind
+    const classes   = allNodes.filter(n => n.kind === 'class');
+    const routes    = allNodes.filter(n => n.kind === 'route');
+    const methods   = allNodes.filter(n => n.kind === 'method');
+    const fields    = allNodes.filter(n => n.kind === 'field');
+    const variables = allNodes.filter(n => n.kind === 'variable');
+
+    // Separate XML views / qweb templates from methods
+    const views     = methods.filter(n => n.qualifiedName?.startsWith('view::'));
+    const qwebTmpl  = methods.filter(n => n.qualifiedName?.startsWith('qweb::'));
+    const groups    = variables.filter(n => n.signature === 'group' || n.qualifiedName?.startsWith('res.groups::'));
+    const seqNodes  = variables.filter(n => n.signature === 'sequence code');
+    const cfgParams = variables.filter(n => n.signature === 'config_param key');
+
+    const lines: string[] = [`# Odoo Module: ${seg}`, '', `**Files indexed:** ${moduleFiles.length}`, ''];
+
+    if (classes.length > 0) {
+      lines.push(`## Models / Classes (${classes.length})`);
+      for (const c of classes) {
+        const modelField = fields.find(f => f.name === '_name' && f.filePath === c.filePath &&
+          f.startLine > c.startLine && f.startLine < c.endLine);
+        const modelName = modelField?.signature?.match(/'([^']+)'/)?.[1];
+        lines.push(`- \`${c.name}\`${modelName ? ` — _name: \`${modelName}\`` : ''} (${c.filePath}:${c.startLine})`);
+      }
+      lines.push('');
+    }
+
+    if (views.length > 0) {
+      lines.push(`## Views (${views.length})`);
+      for (const v of views.slice(0, 30)) {
+        const vname = v.qualifiedName?.replace('view::', '') ?? v.name;
+        lines.push(`- \`${vname}\` (${v.filePath}:${v.startLine})`);
+      }
+      if (views.length > 30) lines.push(`  … ${views.length - 30} more`);
+      lines.push('');
+    }
+
+    if (qwebTmpl.length > 0) {
+      lines.push(`## QWeb Templates (${qwebTmpl.length})`);
+      for (const t of qwebTmpl.slice(0, 20)) {
+        lines.push(`- \`${t.qualifiedName?.replace('qweb::', '') ?? t.name}\``);
+      }
+      if (qwebTmpl.length > 20) lines.push(`  … ${qwebTmpl.length - 20} more`);
+      lines.push('');
+    }
+
+    if (routes.length > 0) {
+      lines.push(`## Routes / Controllers (${routes.length})`);
+      for (const r of routes) lines.push(`- \`${r.name}\` (${r.filePath}:${r.startLine})`);
+      lines.push('');
+    }
+
+    if (groups.length > 0) {
+      lines.push(`## Security Groups (${groups.length})`);
+      for (const g of groups.slice(0, 20)) lines.push(`- \`${g.qualifiedName ?? g.name}\``);
+      lines.push('');
+    }
+
+    if (seqNodes.length > 0) {
+      lines.push(`## ir.sequence codes (${seqNodes.length})`);
+      for (const s of seqNodes) lines.push(`- \`${s.name}\``);
+      lines.push('');
+    }
+
+    if (cfgParams.length > 0) {
+      lines.push(`## ir.config_parameter keys (${cfgParams.length})`);
+      for (const p of cfgParams) lines.push(`- \`${p.name}\``);
+      lines.push('');
+    }
+
+    lines.push(`---`, `*Use \`codegraph_explore\` on class/method names above for full source. Use \`codegraph_trace\` for cross-module flows.*`);
+
+    return this.textResult(lines.join('\n'));
   }
 
   private textResult(text: string): ToolResult {
