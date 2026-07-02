@@ -75,8 +75,8 @@ function extractPythonPatterns(
 ): void {
   const safe = stripCommentsForRegex(content, 'python');
 
-  // self.env['res.partner'] or self.env["res.partner"]
-  const envModel = /self\.env\[['"]([a-z][a-z0-9_.]+)['"]\]/g;
+  // .env['res.partner'] — matches self.env, self.sudo().env, request.env, self.with_context().env
+  const envModel = /\.env\[['"]([a-z][a-z0-9_.]+)['"]\]/g;
   let m: RegExpExecArray | null;
   while ((m = envModel.exec(safe)) !== null) {
     const modelName = m[1]!;
@@ -90,6 +90,14 @@ function extractPythonPatterns(
       filePath,
       language: 'python',
     });
+  }
+
+  // env.registry['model.name'] → model ref (Odoo model registry access)
+  const envRegistry = /env\.registry\[['"]([a-z][a-z0-9_.]+)['"]\]/g;
+  while ((m = envRegistry.exec(safe)) !== null) {
+    const modelName = m[1]!;
+    const line = safe.slice(0, m.index).split('\n').length;
+    references.push({ fromNodeId: `file:${filePath}`, referenceName: modelName, referenceKind: 'references', line, column: 0, filePath, language: 'python' });
   }
 
   // env.ref('module.xml_id') or self.env.ref('module.xml_id')

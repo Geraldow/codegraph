@@ -49,6 +49,18 @@ export const pythonExtractor: LanguageExtractor = {
     // @api.depends / @api.onchange / @api.constrains / @api.returns
     if (node.type === 'decorator') {
       const expr = node.namedChildren[0];
+      // @api.model_create_multi / @api.autovacuum / @api.model — no-arg decorators
+      if (expr?.type === 'attribute') {
+        const attrText = getNodeText(expr, ctx.source);
+        if (/^api\.(model_create_multi|autovacuum|model)$/.test(attrText)) {
+          ctx.addUnresolvedReference({
+            fromNodeId, referenceName: `decorator::${attrText}`,
+            referenceKind: 'references', line: node.startPosition.row + 1,
+            column: 0, filePath: ctx.filePath, language: 'python',
+          });
+        }
+        return false;
+      }
       if (!expr || expr.type !== 'call') return false;
       const funcNode = getChildByField(expr, 'function');
       if (!funcNode) return false;
@@ -330,6 +342,11 @@ export const pythonExtractor: LanguageExtractor = {
                 const modelRef = stripQuotes(getNodeText(val, ctx.source));
                 if (modelRef) ctx.addUnresolvedReference({ fromNodeId, referenceName: modelRef, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
               }
+              // 'state' key with string value → state_transition::{value} ref
+              if (name === 'state' && val?.type === 'string') {
+                const stateVal = stripQuotes(getNodeText(val, ctx.source));
+                if (stateVal) ctx.addUnresolvedReference({ fromNodeId, referenceName: `state_transition::${stateVal}`, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+              }
             }
             // (0, cmd, {field: val}) ORM command tuples in list values — e.g. 'line_ids': [(0, 0, {...})]
             if (val?.type === 'list') {
@@ -454,6 +471,19 @@ export const pythonExtractor: LanguageExtractor = {
         if (firstArg?.type === 'string') {
           const group = stripQuotes(getNodeText(firstArg, ctx.source));
           if (group) ctx.addUnresolvedReference({ fromNodeId, referenceName: group, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+        }
+        return false;
+      }
+
+      // .with_context(key=val, ...) → context_key::{key} refs for each kwarg
+      if (/\.with_context$/.test(funcText)) {
+        for (const child of argsNode.namedChildren) {
+          if (child.type !== 'keyword_argument') continue;
+          const kn = getChildByField(child, 'name');
+          if (kn) {
+            const key = getNodeText(kn, ctx.source);
+            if (key) ctx.addUnresolvedReference({ fromNodeId, referenceName: `context_key::${key}`, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+          }
         }
         return false;
       }
