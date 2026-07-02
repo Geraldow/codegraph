@@ -191,7 +191,7 @@ export const pythonExtractor: LanguageExtractor = {
         // T1-7 + T2-C/H/I/S: extended singleRefKeys
         const singleRefKeys = [
           'compute', 'inverse', 'search', 'currency_field', 'comodel_name', 'inverse_name',
-          'groups', 'config_parameter', 'digits', 'selection',
+          'groups', 'config_parameter', 'digits', 'selection', 'default',
         ];
         for (const key of singleRefKeys) {
           const val = kwargs[key];
@@ -210,6 +210,46 @@ export const pythonExtractor: LanguageExtractor = {
         const relation = kwargs['relation'];
         if (relation) ctx.addUnresolvedReference({ fromNodeId, referenceName: `m2m_relation::${relation}`, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
 
+        // domain=[('field', op, val)] kwarg → field refs from tuple[0]
+        for (const child of argsNode.namedChildren) {
+          if (child.type !== 'keyword_argument') continue;
+          const kn = getChildByField(child, 'name');
+          const kv = getChildByField(child, 'value');
+          if (!kn || !kv || getNodeText(kn, ctx.source) !== 'domain') continue;
+          if (kv.type === 'list') {
+            for (const item of kv.namedChildren) {
+              if (item.type !== 'tuple') continue;
+              const first = item.namedChildren[0];
+              if (first?.type === 'string') {
+                const fn = stripQuotes(getNodeText(first, ctx.source));
+                if (fn && !/^[|&!]$/.test(fn)) ctx.addUnresolvedReference({ fromNodeId, referenceName: fn, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+              }
+            }
+          }
+        }
+
+        // states={'state': [('field', attr, val)]} kwarg → field refs from tuple[0]
+        for (const child of argsNode.namedChildren) {
+          if (child.type !== 'keyword_argument') continue;
+          const kn = getChildByField(child, 'name');
+          const kv = getChildByField(child, 'value');
+          if (!kn || !kv || getNodeText(kn, ctx.source) !== 'states') continue;
+          if (kv.type !== 'dictionary') continue;
+          for (const pair of kv.namedChildren) {
+            if (pair.type !== 'pair') continue;
+            const stateList = getChildByField(pair, 'value');
+            if (stateList?.type !== 'list') continue;
+            for (const item of stateList.namedChildren) {
+              if (item.type !== 'tuple') continue;
+              const first = item.namedChildren[0];
+              if (first?.type === 'string') {
+                const fn = stripQuotes(getNodeText(first, ctx.source));
+                if (fn) ctx.addUnresolvedReference({ fromNodeId, referenceName: fn, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+              }
+            }
+          }
+        }
+
         // T1-A: positional args → comodel/inverse_name refs for relational fields
         const positionalArgs: string[] = [];
         for (const child of argsNode.namedChildren) {
@@ -226,6 +266,23 @@ export const pythonExtractor: LanguageExtractor = {
         }
         if (fieldType === 'Many2many' && positionalArgs[0]) {
           ctx.addUnresolvedReference({ fromNodeId, referenceName: positionalArgs[0], referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+          // positional arg[1] = relation table name → m2m_relation ref
+          if (positionalArgs[1]) ctx.addUnresolvedReference({ fromNodeId, referenceName: `m2m_relation::${positionalArgs[1]}`, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+        }
+
+        // fields.Reference([('model.name', 'Label'), ...]) list positional arg → model refs
+        if (fieldType === 'Reference') {
+          const firstPosNode = argsNode.namedChildren.find((c: SyntaxNode) => c.type !== 'keyword_argument');
+          if (firstPosNode?.type === 'list') {
+            for (const item of firstPosNode.namedChildren) {
+              if (item.type !== 'tuple') continue;
+              const first = item.namedChildren[0];
+              if (first?.type === 'string') {
+                const modelRef = stripQuotes(getNodeText(first, ctx.source));
+                if (modelRef) ctx.addUnresolvedReference({ fromNodeId, referenceName: modelRef, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+              }
+            }
+          }
         }
 
         // T1-B: selection=[('draft','Draft'), ...] → selection::fieldName::key refs
@@ -268,6 +325,11 @@ export const pythonExtractor: LanguageExtractor = {
             if (key?.type === 'string') {
               const name = stripQuotes(getNodeText(key, ctx.source));
               if (name) ctx.addUnresolvedReference({ fromNodeId, referenceName: name, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+              // 'res_model'/'model'/'model_id' keys: the VALUE is a model name
+              if (['res_model', 'model', 'model_id', 'model_name'].includes(name) && val?.type === 'string') {
+                const modelRef = stripQuotes(getNodeText(val, ctx.source));
+                if (modelRef) ctx.addUnresolvedReference({ fromNodeId, referenceName: modelRef, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+              }
             }
             // (0, cmd, {field: val}) ORM command tuples in list values — e.g. 'line_ids': [(0, 0, {...})]
             if (val?.type === 'list') {
@@ -354,6 +416,44 @@ export const pythonExtractor: LanguageExtractor = {
               if (fn) ctx.addUnresolvedReference({ fromNodeId, referenceName: fn, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
             }
           }
+        }
+        return false;
+      }
+
+      // .filtered(lambda r: r.field_name ...) → field refs from lambda attribute accesses
+      if (/\.filtered$/.test(funcText)) {
+        const lambdaArg = argsNode.namedChildren[0];
+        if (lambdaArg?.type === 'lambda') {
+          const paramsNode = getChildByField(lambdaArg, 'parameters');
+          const bodyNode = getChildByField(lambdaArg, 'body');
+          if (paramsNode && bodyNode) {
+            const paramName = paramsNode.namedChildren.find((c: SyntaxNode) => c.type === 'identifier');
+            const paramStr = paramName ? getNodeText(paramName, ctx.source) : null;
+            if (paramStr) {
+              const walkAttrs = (n: SyntaxNode): void => {
+                if (n.type === 'attribute') {
+                  const obj = getChildByField(n, 'object');
+                  const attr = getChildByField(n, 'attribute');
+                  if (obj && attr && getNodeText(obj, ctx.source) === paramStr) {
+                    const fn = getNodeText(attr, ctx.source);
+                    if (fn) ctx.addUnresolvedReference({ fromNodeId, referenceName: fn, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
+                  }
+                }
+                for (const child of n.namedChildren) walkAttrs(child);
+              };
+              walkAttrs(bodyNode);
+            }
+          }
+        }
+        return false;
+      }
+
+      // .has_group('module.group_xmlid') → group ref
+      if (/\.has_group$/.test(funcText)) {
+        const firstArg = argsNode.namedChildren[0];
+        if (firstArg?.type === 'string') {
+          const group = stripQuotes(getNodeText(firstArg, ctx.source));
+          if (group) ctx.addUnresolvedReference({ fromNodeId, referenceName: group, referenceKind: 'references', line, column: 0, filePath: ctx.filePath, language: 'python' });
         }
         return false;
       }
