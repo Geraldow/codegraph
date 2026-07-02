@@ -16,15 +16,20 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Odoo `ir.model.access.csv` and model-data CSV files are now indexed: access rules produce `ir.model.access::rule_id` method nodes, and data CSVs emit a model ref plus one field ref per column header.
 - OWL components now expose their service dependencies: `useService('name')` calls are extracted as `service::name` references, connecting frontend JS/TS components to their backend service contracts.
 - Odoo framework resolver: `env['ir.config_parameter'].get_param('key')` emits `config_param::key`, `env['ir.sequence'].next_by_code('code')` emits `ir.sequence::code`, and `__manifest__.py` `data`/`demo`/`auto_install` arrays emit import edges to the referenced files and modules.
+- Odoo ORM coverage is now substantially deeper: `self.search_read([domain], ['field', ...])` emits both domain-tuple field refs and the explicit fields list; `filtered(lambda r: r.field)` extracts the accessed attribute; `has_group('module.group')` emits a group ref; `with_context(key=val)` emits `context_key::key` refs so context-passing chains are navigable; and `_compute_X`/`_inverse_X`/`_onchange_X` method names are linked back to the field they target via naming convention.
+- Odoo XML `ir.sequence` and `ir.config_parameter` records now create a second index node keyed by their code/key value (in addition to their xml_id), so `next_by_code('account.detraction')` in Python finds the matching sequence record even though the xml_id differs from the code.
+- Odoo XML view arch patterns now produce field and method references: `t-field="object.partner_id"` emits each path segment; `t-on-click`/`t-on-change` emit the handler method name; `<field name="domain_force">` and `<field name="domain">` parse domain tuples and emit the field names; `<field name="context">` emits `default_X` keys as field refs; and `eval="[(4, ref('module.xml_id'))]"` emits the referenced xml_id.
+- OWL/JS coverage: `orm.call('res.partner', 'method')` emits model and method refs; `orm.searchRead('model', ['field1', 'field2'])` emits the model and each field; `doAction({res_model: 'X'})` and `loadViews({model: 'X'})` emit model refs from the action dict.
+- `request.render('module.template', vals)` in Python controllers now emits a `qweb::module.template` reference, connecting server-side rendering calls to their QWeb template nodes.
+- `@http.route(['/path1', '/path2'], ...)` with a list of paths now creates one route node per path, so all URL variants are discoverable by an agent.
+- `codegraph_module_overview` is a new MCP tool that returns a structured summary of an Odoo module in one call — models, views, QWeb templates, routes, security groups, `ir.sequence` codes, and `ir.config_parameter` keys — so an agent can orient itself in a new module without multiple file-listing and search calls.
 - `codegraph init` now builds the initial index by default — you no longer need the `-i`/`--index` flag (it's still accepted, so existing commands and scripts keep working). (#483)
 - Go: Gin middleware chains now connect end-to-end in `codegraph_trace` and `codegraph_explore` — following a request reaches the middleware and route handlers registered via `.Use()` / `.GET()` instead of dead-ending where the framework dispatches the chain dynamically.
 
 ### Fixes
 
 - Odoo ORM call patterns (`self.write`, `self.create`, `self.mapped`) inside method bodies now emit their field and path refs correctly — the tree-sitter visitor was calling the language-specific hook for field-level nodes but not for call nodes inside method bodies, so dict keys and dotted paths went unextracted.
-
-### Fixes
-
+- `ir.sequence` and `ir.config_parameter` cross-file references no longer dead-end: the framework resolver now claims `config_param::key` and `ir.sequence::code` refs and matches them to the variable nodes created from XML records, closing the Python→XML graph edge.
 - Indexing a project that contains only config-style files (YAML, Twig, or `.properties`) no longer misleadingly reports "No files found to index" — these files are tracked at the file level and are now counted as indexed. Thanks @luojiyin1987 (#357).
 
 ## [0.9.7] - 2026-05-28

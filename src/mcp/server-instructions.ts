@@ -46,10 +46,12 @@ of calls; a grep/read exploration is dozens.
 - **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read)
 - **"What's in directory X?"** → \`codegraph_files\`
 - **"Is the index ready / what's its size?"** → \`codegraph_status\`
+- **"Give me an overview of Odoo module X."** → \`codegraph_module_overview\` (ONE call — models, views, routes, groups, sequences, config params)
 
 ## Common chains
 
 - **Flow / "how does X reach Y"**: \`codegraph_trace\` from→to FIRST — one call returns the entire path with dynamic-dispatch hops bridged. Then ONE \`codegraph_explore\` for the hop bodies if you need them. Do NOT reconstruct the path with \`codegraph_search\` + \`codegraph_callers\` — that's exactly what trace does in a single call.
+- **Odoo module exploration**: \`codegraph_module_overview\` FIRST to orient (models, views, routes in one call), then \`codegraph_explore\` on the specific class/method names it surfaces. Do NOT call \`codegraph_files\` + multiple \`codegraph_search\` calls — module_overview is one round-trip.
 - **Onboarding**: \`codegraph_context\` first. If still unclear, \`codegraph_explore\` for breadth, then \`codegraph_node\` on specific symbols.
 - **Refactor planning**: \`codegraph_search\` → \`codegraph_callers\` → \`codegraph_impact\`. The blast-radius answer comes from impact, not from walking callers manually.
 - **Debugging a regression**: \`codegraph_callers\` of the suspected symbol; widen with \`codegraph_impact\` if an unexpected call appears.
