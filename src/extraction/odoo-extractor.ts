@@ -279,6 +279,32 @@ export class OdooExtractor {
           }
         }
       }
+
+      // ir.sequence → variable node ir.sequence::{code} so next_by_code('X') refs resolve
+      if (model === 'ir.sequence') {
+        const seqCodeMatch = /<field\s+name\s*=\s*"code"\s*>([^<]+)<\/field>/.exec(body);
+        if (seqCodeMatch) {
+          const codeVal = seqCodeMatch[1]!.trim();
+          if (codeVal) {
+            const codeNodeId = generateNodeId(this.filePath, 'variable', `ir.sequence::${codeVal}`, startLine);
+            this.nodes.push({ id: codeNodeId, kind: 'variable', name: codeVal, qualifiedName: `ir.sequence::${codeVal}`, filePath: this.filePath, language: 'xml', signature: 'sequence code', startLine, endLine, startColumn: 0, endColumn: 0, updatedAt: Date.now() });
+            this.edges.push({ source: nodeId, target: codeNodeId, kind: 'contains' });
+          }
+        }
+      }
+
+      // ir.config_parameter → variable node config_param::{key} so get_param('X') refs resolve
+      if (model === 'ir.config_parameter') {
+        const cfgKeyMatch = /<field\s+name\s*=\s*"key"\s*>([^<]+)<\/field>/.exec(body);
+        if (cfgKeyMatch) {
+          const keyVal = cfgKeyMatch[1]!.trim();
+          if (keyVal) {
+            const keyNodeId = generateNodeId(this.filePath, 'variable', `config_param::${keyVal}`, startLine);
+            this.nodes.push({ id: keyNodeId, kind: 'variable', name: keyVal, qualifiedName: `config_param::${keyVal}`, filePath: this.filePath, language: 'xml', signature: 'config_param key', startLine, endLine, startColumn: 0, endColumn: 0, updatedAt: Date.now() });
+            this.edges.push({ source: nodeId, target: keyNodeId, kind: 'contains' });
+          }
+        }
+      }
     }
   }
 
@@ -412,7 +438,7 @@ export class OdooExtractor {
 
   /** T1-F: <field name="res_model|model|...">dotted.model.name</field> → model ref */
   private extractFieldTextContent(fileNodeId: string): void {
-    const modelFieldNames = ['res_model', 'src_model', 'model', 'model_name'];
+    const modelFieldNames = ['res_model', 'src_model', 'model', 'model_name', 'model_id'];
     const pattern = new RegExp(
       `<field\\s+name\\s*=\\s*"(${modelFieldNames.join('|')})"\\s*>([^<]+)<\\/field>`,
       'g'
