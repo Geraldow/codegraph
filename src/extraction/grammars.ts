@@ -98,6 +98,9 @@ export const EXTENSION_MAP: Record<string, Language> = {
   // XML: file-level tracking; the MyBatis extractor matches `<mapper namespace="...">`
   // shape and emits SQL-statement nodes (other XML returns empty).
   '.xml': 'xml',
+  // RelaxNG schemas (e.g. Odoo's view-arch .rng grammars under addons/base/rng/):
+  // XML syntax, routed through the same 'xml' language/extractor as .xml.
+  '.rng': 'xml',
   // Spring config: `application.properties` / `application-*.properties`. Same
   // shape as the `.yml` variants — the YAML/properties extractor emits one node
   // per leaf key, and the Spring resolver links `@Value("${k}")` references.
